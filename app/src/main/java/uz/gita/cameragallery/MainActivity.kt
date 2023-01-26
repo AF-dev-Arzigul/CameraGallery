@@ -1,10 +1,13 @@
 package uz.gita.cameragallery
 
+
 import android.Manifest
 import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.content.ContentValues
+import android.content.Context
 import android.content.Intent
+import android.hardware.camera2.CameraManager
 import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
@@ -18,10 +21,14 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCapture.FLASH_MODE_OFF
+import androidx.camera.core.ImageCapture.FLASH_MODE_ON
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.*
+import androidx.camera.view.CameraController
+import androidx.camera.view.LifecycleCameraController
 import androidx.core.content.ContextCompat
 import by.kirich1409.viewbindingdelegate.viewBinding
 import com.google.android.material.floatingactionbutton.FloatingActionButton
@@ -39,21 +46,23 @@ class MainActivity : AppCompatActivity(R.layout.activity_main) {
     private val binding by viewBinding(ActivityMainBinding::bind, R.id.container)
 
     private var flashMode: Int = 0
+    private var isTorchOn = false
     private var isRecord = false
     private var isResume = false
     private lateinit var recording: Recording
     private var isFront = false
     private lateinit var preview: Preview
     private lateinit var cameraSelector: CameraSelector
+    private lateinit var cameraManager: CameraManager
     private lateinit var cameraProcessFuture: ListenableFuture<ProcessCameraProvider>
     private var imageCapture: ImageCapture? = null
 
+    @SuppressLint("RestrictedApi")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
         supportActionBar?.hide()
-
 
         Dexter.withContext(this)
             .withPermissions(
@@ -81,9 +90,63 @@ class MainActivity : AppCompatActivity(R.layout.activity_main) {
                 }
             }).check()
 
+        cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+
+        val selector = QualitySelector.from(
+            Quality.FHD,
+            FallbackStrategy.higherQualityOrLowerThan(Quality.SD)
+        )
+
+        val recorder = Recorder.Builder()
+            .setQualitySelector(selector)
+            .build()
+
+        val videoCapture = VideoCapture.withOutput(recorder)
+
         binding.takePhoto.setOnClickListener {
             capture()
             binding.ivRedIcon.visibility = View.GONE
+        }
+
+        binding.ivTorch.setOnClickListener {
+            if (isTorchOn) {
+                isTorchOn = false
+                imageCapture?.camera?.cameraControl?.enableTorch(false)
+                videoCapture.camera?.cameraControl?.enableTorch(false)
+                binding.ivTorch.setImageResource(R.drawable.baseline_flashlight_off_24)
+            } else {
+                isTorchOn = true
+                imageCapture?.camera?.cameraControl?.enableTorch(true)
+                videoCapture.camera?.cameraControl?.enableTorch(true)
+                binding.ivTorch.setImageResource(R.drawable.baseline_flashlight_on_24)
+            }
+
+//            if (isRecord) {
+//                binding.ivTorch.setImageResource(R.drawable.baseline_flashlight_off_24)
+//            } else {
+//                binding.ivTorch.setImageResource(R.drawable.baseline_flashlight_on_24)
+//            }
+
+        }
+
+        binding.btnFlash.setOnClickListener {
+            when (flashMode) {
+                0 -> {
+                    flashMode++
+                    imageCapture!!.flashMode = ImageCapture.FLASH_MODE_AUTO
+                    binding.btnFlash.setImageResource(R.drawable.ic_baseline_flash_auto_24)
+                }
+                1 -> {
+                    flashMode++
+                    imageCapture!!.flashMode = ImageCapture.FLASH_MODE_ON
+                    binding.btnFlash.setImageResource(R.drawable.ic_baseline_flash_on_24)
+                }
+                2 -> {
+                    flashMode = 0
+                    imageCapture!!.flashMode = ImageCapture.FLASH_MODE_OFF
+                    binding.btnFlash.setImageResource(R.drawable.ic_baseline_flash_off_24)
+                }
+            }
         }
 
         binding.videoCapture.setOnClickListener {
@@ -92,25 +155,26 @@ class MainActivity : AppCompatActivity(R.layout.activity_main) {
                 recording.stop()
                 initPreviews()
                 binding.ivRedIcon.visibility = View.GONE
-//                binding.btnFlash.visibility = View.VISIBLE
+                binding.btnFlash.visibility = View.VISIBLE
                 binding.takePhoto.visibility = View.VISIBLE
                 binding.replace.visibility = View.VISIBLE
                 binding.videoCapture.setImageResource(R.drawable.ic_baseline_circle_24)
                 binding.counter.stop()
                 binding.counter.base = SystemClock.elapsedRealtime()
-//                binding.counter.text = "00.00"
+                binding.counter.text = "00.00"
             } else {
                 isRecord = true
-                videoCapture()
+                videoCapture(videoCapture)
                 binding.ivRedIcon.visibility = View.VISIBLE
-//                binding.btnFlash.visibility = View.GONE
+                binding.btnFlash.visibility = View.GONE
                 binding.takePhoto.visibility = View.GONE
                 binding.replace.visibility = View.GONE
                 binding.videoCapture.setImageResource(R.drawable.ic_baseline_square_24)
+                binding.ivTorch.setImageResource(R.drawable.baseline_flashlight_off_24)
+                isTorchOn = false
                 binding.counter.start()
             }
         }
-
 
         binding.resumeVideo.setOnClickListener {
             if (isResume) {
@@ -123,8 +187,7 @@ class MainActivity : AppCompatActivity(R.layout.activity_main) {
         binding.replace.setOnClickListener { its ->
             ValueAnimator.ofFloat(-360f).apply {
                 addUpdateListener {
-                    its.rotation =
-                        animatedValue as Float
+                    its.rotation = animatedValue as Float
                 }
                 start()
                 duration = 500
@@ -141,6 +204,7 @@ class MainActivity : AppCompatActivity(R.layout.activity_main) {
         }
     }
 
+
     private fun initPreviews() {
         preview = Preview.Builder().build()
         cameraProcessFuture = ProcessCameraProvider.getInstance(this)
@@ -149,6 +213,7 @@ class MainActivity : AppCompatActivity(R.layout.activity_main) {
             val cameraProvider = cameraProcessFuture.get()
 
             imageCapture = ImageCapture.Builder().build()
+
             preview.setSurfaceProvider(binding.preView.surfaceProvider)
 
             try {
@@ -203,22 +268,16 @@ class MainActivity : AppCompatActivity(R.layout.activity_main) {
         )
     }
 
-    @SuppressLint("MissingPermission")
-    fun videoCapture() {
+    @SuppressLint("MissingPermission", "RestrictedApi")
+    fun videoCapture(videoCapture: VideoCapture<Recorder>) {
         preview = Preview.Builder().build()
         preview.setSurfaceProvider(binding.preView.surfaceProvider)
         cameraProcessFuture = ProcessCameraProvider.getInstance(this)
+        if (isTorchOn) videoCapture.camera?.cameraControl?.enableTorch(true)
         cameraProcessFuture.addListener({
-            val selector = QualitySelector.from(
-                Quality.FHD,
-                FallbackStrategy.higherQualityOrLowerThan(Quality.SD)
-            )
-            val recorder = Recorder.Builder()
-                .setQualitySelector(selector)
-                .build()
 
-            val videoCapture = VideoCapture.withOutput(recorder)
             val cameraProvider = cameraProcessFuture.get()
+
             val time = System.currentTimeMillis()
             val contentValue = ContentValues()
             contentValue.put(MediaStore.MediaColumns.DISPLAY_NAME, time)
